@@ -42,7 +42,7 @@ contract BankAccount {
     mapping(address => uint[]) userAccounts;
 
     uint nextAccountId;
-    uint nextWithdrawId;
+    uint nextWithdrawalId;
 
     modifier accountOwner(uint accountId) {
         bool isOwner;
@@ -65,6 +65,25 @@ contract BankAccount {
                 }
             }
         }
+        _;
+    }
+
+    modifier checkBalance(uint accountId, uint amount) {
+        require(accounts[accountId].balance >= amount, "insufficient balance");
+        _;
+    }
+
+    modifier canApprove(uint accountId, uint withdrawalId) {
+        require(!accounts[accountId].withdrawRequests[withdrawalId].approved, "request already approved");
+        require(accounts[accountId].withdrawRequests[withdrawalId].user != msg.sender, "you cannot approve this request");
+        require(accounts[accountId].withdrawRequests[withdrawalId].user != address(0), "this request does not exist");
+        require(!accounts[accountId].withdrawRequests[withdrawalId].ownersApproved[msg.sender], "you already approve this withdrawal request");
+        _;
+    }
+
+    modifier canWithdraw(uint accountId, uint withdrawalId) {
+        require(accounts[accountId].withdrawRequests[withdrawalId].user == msg.sender, "you did not create this request");
+        require(accounts[accountId].withdrawRequests[withdrawalId].approved, "this request is not approved");
         _;
     }
 
@@ -95,20 +114,43 @@ contract BankAccount {
         emit AccountCreated(owners, id, block.timestamp);
     }
 
-    function requestWithdrawal(uint accountId, uint amount) external {
+    function requestWithdrawal(uint accountId, uint amount) external accountOwner(accountId) checkBalance(accountId, amount) {
+        uint withdrawalId = nextWithdrawalId;
+        WithdrawRequest storage request = accounts[accountId].withdrawRequests[withdrawalId];
 
+        request.user = msg.sender;
+        request.amount = amount;
+
+        nextWithdrawalId++;
+
+        emit WithdrawRequested(msg.sender, accountId, id, amount, block.timestamp);
     }
 
-    function approveWithdrawal(uint accountId, uint withdrawId) external {
+    function approveWithdrawal(uint accountId, uint withdrawalId) external accountOwner(accountId) canApprove(accountId, withdrawalId) {
+        WithdrawRequest storage request = accounts[accountId].withdrawRequests[withdrawalId];
+        request.numOfApprovals++;
+        request.ownersApproved[msg.sender] = true;
 
+        if (request.numOfApprovals == accounts[accountId].owners.length - 1) {
+            request.approved = true;
+        }
     }
 
-    function withdraw(uint accountId, uint withdrawId) external {
+    function withdraw(uint accountId, uint withdrawalId) external canWithdraw(accountId, withdrawalId) {
+        uint amount = accounts[accountId].withdrawRequests[withdrawalId].amount;
+        require(accounts[accountId].balance >= amount, "insufficient funds");
 
+        accounts[accountId].balance -= amount;
+        delete accounts[accountId].withdrawRequests[withdrawalId];
+
+        (bool sent, ) = payable(msg.sender).call{value: amount}("");
+        require(sent);
+
+        emit Withdraw(withdrawalId, block.timestamp);
     }
 
     function getBalance(uint accountId) public view returns (uint) {
-        return 0;
+        return accounts[accountId].balance;
     }
 
     function getOwners(uint accountId) public view returns (address[] memory) {
